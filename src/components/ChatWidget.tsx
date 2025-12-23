@@ -144,12 +144,17 @@ export function ChatWidget() {
           }
           addMessage(`✅ ${msg}`, true, pdfResponse.medicamentos);
         } else {
-          // Mensagem diferente se o medicamento pode ter acabado
-          if (pdfResponse.podeEstarEsgotado) {
-            addMessage(`⚠️ O medicamento "${userInput}" não está disponível no estoque atual deste posto. É possível que ele tenha acabado ou não seja distribuído nesta unidade no momento. Recomendo verificar diretamente no posto.`, true);
-          } else {
-            addMessage(pdfResponse.mensagem || `Não encontrei "${userInput}" no PDF deste posto.`, true);
-          }
+          // Mensagem mais clara quando não encontrado
+          const nomeBuscado = queryForPdf !== userInput ? `"${userInput}" (${queryForPdf})` : `"${userInput}"`;
+          addMessage(
+            `❌ ${nomeBuscado} não está disponível no estoque atual do ${selectedPosto.nome}.\n\n` +
+            `Isso pode significar:\n` +
+            `• O medicamento esgotou temporariamente\n` +
+            `• Não é distribuído neste posto\n` +
+            `• O nome pode estar diferente no sistema\n\n` +
+            `💡 Dica: Tente buscar pelo princípio ativo (ex: "Paracetamol" ao invés de "Tylenol").`,
+            true
+          );
         }
 
         setTimeout(() => {
