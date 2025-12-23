@@ -70,13 +70,28 @@ export function useMedicamentos() {
 
     const { data, error } = await supabase
       .from('medicamentos')
-      .select('nome')
+      .select('nome, marcas')
       .eq('posto_id', postoId);
 
     if (error) throw error;
 
-    const meds = (data || []) as Array<{ nome: string }>;
+    const meds = (data || []) as Array<{ nome: string; marcas?: string[] | null }>;
 
+    // 1. Primeiro, verifica se a busca é por uma MARCA conhecida
+    for (const med of meds) {
+      if (med.marcas && Array.isArray(med.marcas)) {
+        for (const marca of med.marcas) {
+          const marcaNorm = normalize(marca);
+          // Verifica se a query corresponde à marca (exata ou prefixo)
+          if (marcaNorm === normalizedQuery || marcaNorm.startsWith(normalizedQuery) || normalizedQuery.startsWith(marcaNorm)) {
+            // Retorna o nome completo do medicamento para buscar no PDF
+            return med.nome.trim();
+          }
+        }
+      }
+    }
+
+    // 2. Verifica correspondência por prefixo no nome do medicamento
     const matchByPrefix = meds.filter((med) => {
       const nomeNorm = normalize(med.nome);
       return token ? nomeNorm.startsWith(token) : false;
@@ -91,6 +106,7 @@ export function useMedicamentos() {
       return isBrandMapping ? resolvedNome : query;
     }
 
+    // 3. Correção de erros de digitação com Levenshtein
     let best: { dist: number; nomeToken: string } | null = null;
 
     for (const med of meds) {
