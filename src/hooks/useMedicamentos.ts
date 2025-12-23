@@ -38,7 +38,12 @@ export function useMedicamentos() {
   const [error, setError] = useState<string | null>(null);
 
   const normalize = (s: string) =>
-    s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
+    s
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
 
   const levenshtein = (a: string, b: string) => {
     if (a === b) return 0;
@@ -52,11 +57,7 @@ export function useMedicamentos() {
     for (let i = 1; i <= a.length; i++) {
       for (let j = 1; j <= b.length; j++) {
         const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-        dp[i][j] = Math.min(
-          dp[i - 1][j] + 1,
-          dp[i][j - 1] + 1,
-          dp[i - 1][j - 1] + cost
-        );
+        dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost);
       }
     }
 
@@ -77,21 +78,31 @@ export function useMedicamentos() {
 
     const meds = (data || []) as Array<{ nome: string; marcas?: string[] | null }>;
 
-    // 1. Primeiro, verifica se a busca é por uma MARCA conhecida
+    // 1) Se o usuário digitou uma MARCA (nome comercial), mapeia para o princípio ativo.
+    // Importante: devolvemos um termo CURTO (primeiro token do nome) para aumentar a chance de match no PDF.
     for (const med of meds) {
-      if (med.marcas && Array.isArray(med.marcas)) {
-        for (const marca of med.marcas) {
-          const marcaNorm = normalize(marca);
-          // Verifica se a query corresponde à marca (exata ou prefixo)
-          if (marcaNorm === normalizedQuery || marcaNorm.startsWith(normalizedQuery) || normalizedQuery.startsWith(marcaNorm)) {
-            // Retorna o nome completo do medicamento para buscar no PDF
-            return med.nome.trim();
-          }
+      const marcas = med.marcas || [];
+      for (const marca of marcas) {
+        const marcaNorm = normalize(marca);
+        if (!marcaNorm) continue;
+
+        const left = marcaNorm.slice(0, normalizedQuery.length);
+        const typoDist = levenshtein(left, normalizedQuery);
+
+        const isMatch =
+          marcaNorm === normalizedQuery ||
+          marcaNorm.startsWith(normalizedQuery) ||
+          normalizedQuery.startsWith(marcaNorm) ||
+          typoDist <= 1;
+
+        if (isMatch) {
+          const nomeToken = normalize(med.nome).split(' ')[0];
+          return nomeToken || med.nome.trim() || query;
         }
       }
     }
 
-    // 2. Verifica correspondência por prefixo no nome do medicamento
+    // 2) Prefixo no nome do medicamento (princípio ativo digitado)
     const matchByPrefix = meds.filter((med) => {
       const nomeNorm = normalize(med.nome);
       return token ? nomeNorm.startsWith(token) : false;
@@ -103,10 +114,10 @@ export function useMedicamentos() {
       const resolvedNome = matchByPrefix[0].nome?.trim();
       const resolvedToken = resolvedNome ? normalize(resolvedNome).split(' ')[0] : '';
       const isBrandMapping = resolvedToken && !resolvedToken.startsWith(token);
-      return isBrandMapping ? resolvedNome : query;
+      return isBrandMapping ? resolvedToken || resolvedNome : query;
     }
 
-    // 3. Correção de erros de digitação com Levenshtein
+    // 3) Correção de erros de digitação (Levenshtein)
     let best: { dist: number; nomeToken: string } | null = null;
 
     for (const med of meds) {
@@ -134,14 +145,11 @@ export function useMedicamentos() {
       const normalizedQuery = normalize(query);
       const firstToken = normalizedQuery.split(' ')[0];
 
-      const { data, error } = await supabase
-        .from('medicamentos')
-        .select('*')
-        .eq('posto_id', postoId);
+      const { data, error } = await supabase.from('medicamentos').select('*').eq('posto_id', postoId);
 
       if (error) throw error;
 
-      const filtered = (data || []).filter(med => {
+      const filtered = (data || []).filter((med) => {
         const normalizedNome = normalize(med.nome);
         return firstToken ? normalizedNome.startsWith(firstToken) : false;
       });
@@ -181,7 +189,7 @@ export function useMedicamentos() {
       return {
         encontrado: false,
         mensagem: 'Desculpe, não foi possível ler o PDF deste posto no momento. Por favor, tente novamente.',
-        medicamentos: []
+        medicamentos: [],
       };
     } finally {
       setLoading(false);
