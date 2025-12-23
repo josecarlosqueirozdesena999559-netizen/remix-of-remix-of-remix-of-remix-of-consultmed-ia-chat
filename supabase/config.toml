@@ -1,0 +1,4 @@
+project_id = "btfecoijribbvynljxxy"
+
+[functions.search-medicamento]
+verify_jwt = false
