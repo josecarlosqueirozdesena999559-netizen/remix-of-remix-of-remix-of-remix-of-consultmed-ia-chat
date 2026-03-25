@@ -46,18 +46,18 @@ function introMessages(): OutgoingWhatsAppMessage[] {
   return [
     {
       type: "text",
-      text: "Ola! Eu sou o assistente do ConsultMed IA e estou aqui para ajudar voce a consultar medicamentos disponiveis nas UBS da sua cidade.",
+      text: "👋 Olá! Eu sou o assistente do ConsultMed IA e estou aqui para ajudar você a consultar medicamentos disponíveis nas UBS da sua cidade.",
     },
     {
       type: "text",
-      text: "Para comecar, qual e o seu nome?",
+      text: "Para começar, qual é o seu nome?",
     },
   ];
 }
 
 function buildPostoListMessage(postos: PostoRecord[], prompt: string): OutgoingWhatsAppMessage[] {
   if (postos.length === 0) {
-    return [{ type: "text", text: "Nao ha postos disponiveis no momento." }];
+    return [{ type: "text", text: "No momento, não há postos disponíveis para consulta." }];
   }
 
   const visiblePostos = postos.slice(0, MAX_LIST_ROWS);
@@ -83,7 +83,7 @@ function buildPostoListMessage(postos: PostoRecord[], prompt: string): OutgoingW
   if (postos.length > MAX_LIST_ROWS) {
     messages.push({
       type: "text",
-      text: `Encontrei ${postos.length} postos. Estou exibindo os primeiros ${MAX_LIST_ROWS}. Se o que voce procura nao aparecer, digite parte do nome da unidade ou do bairro para filtrar.`,
+      text: `Encontrei ${postos.length} postos. Estou exibindo os primeiros ${MAX_LIST_ROWS}. Se a unidade desejada não aparecer, digite parte do nome ou do bairro para filtrar.`,
     });
   }
 
@@ -98,10 +98,10 @@ function buildNotificationPrompt(session: ChatSession): OutgoingWhatsAppMessage[
   return [
     {
       type: "buttons",
-      body: `Deseja receber avisos quando o estoque da unidade ${session.selected_posto_nome} (${session.selected_posto_localidade}) for atualizado?`,
+      body: `🔔 Deseja receber avisos quando o estoque da unidade ${session.selected_posto_nome} (${session.selected_posto_localidade}) for atualizado?`,
       buttons: [
         { id: "notify:yes", title: "Receber avisos" },
-        { id: "notify:no", title: "Nao, obrigado" },
+        { id: "notify:no", title: "Não, obrigado" },
       ],
     },
   ];
@@ -119,41 +119,44 @@ function formatMedicamentoMessage(
     const quantidade = resposta.medicamentos.length;
     messages.push({
       type: "text",
-      text: `Consulta realizada com sucesso.\nEncontrei ${quantidade} medicamento${quantidade > 1 ? "s" : ""} disponivel${quantidade > 1 ? "eis" : ""}.`,
+      text: `✅ Consulta realizada com sucesso.\nEncontrei ${quantidade} medicamento${quantidade > 1 ? "s" : ""} disponível${quantidade > 1 ? "eis" : ""}.`,
     });
 
     for (const medicamento of resposta.medicamentos.slice(0, 5)) {
-      const lines = [`*${medicamento.nome}*`, `Codigo: ${medicamento.codigo}`];
+      const lines = [
+        `💊 *${medicamento.nome}*`,
+        `🏷️ Código: ${medicamento.codigo}`,
+      ];
 
       if (medicamento.unidade) {
-        lines.push(`Unidade: ${medicamento.unidade}`);
+        lines.push(`📦 Unidade: ${medicamento.unidade}`);
       }
 
       if (medicamento.lotes.length > 0) {
-        lines.push("Lotes disponiveis:");
+        lines.push("📋 Lotes disponíveis:");
         for (const lote of medicamento.lotes.slice(0, 5)) {
-          lines.push(`- Lote ${lote.lote} | validade ${lote.validade} | quantidade ${lote.quantidade}`);
+          lines.push(`• Lote ${lote.lote} | validade ${lote.validade} | quantidade ${lote.quantidade}`);
         }
       }
 
-      lines.push(`Quantidade total informada no PDF: ${medicamento.quantidadeTotal}`);
+      lines.push(`✅ Quantidade total informada no PDF: ${medicamento.quantidadeTotal}`);
       messages.push({ type: "text", text: lines.join("\n") });
     }
   } else {
     messages.push({
       type: "text",
-      text: `No momento, "${nomeDigitado}" nao consta no estoque atual do ${postoNome}.`,
+      text: `❌ No momento, "${nomeDigitado}" não consta no estoque atual do ${postoNome}.`,
     });
   }
 
   messages.push({
     type: "text",
-    text: `Para mais informacoes, dirija-se ao ${postoNome} (${postoLocalidade}) com receita medica e Cartao do SUS.`,
+    text: `📍 Para mais informações, dirija-se ao ${postoNome} (${postoLocalidade}) com receita médica e Cartão do SUS.`,
   });
 
   messages.push({
     type: "buttons",
-    body: "O que voce deseja fazer agora?\n\nSelecione uma das opcoes abaixo para continuar o atendimento.",
+    body: "📌 O que você deseja fazer agora?\n\nSelecione uma das opções abaixo para continuar o atendimento.",
     buttons: [
       { id: "continue:mesmo_posto", title: "Outro medicamento" },
       { id: "continue:outro_posto", title: "Outro posto" },
@@ -169,7 +172,7 @@ async function selectPosto(session: ChatSession, postoId: string): Promise<FlowR
   if (!posto) {
     return {
       nextSession: withStep(session, "select_posto"),
-      messages: [{ type: "text", text: "Nao consegui localizar esse posto. Tente escolher outra opcao da lista." }],
+      messages: [{ type: "text", text: "Não consegui localizar esse posto. Tente escolher outra opção da lista." }],
     };
   }
 
@@ -185,7 +188,7 @@ async function selectPosto(session: ChatSession, postoId: string): Promise<FlowR
     messages: [
       {
         type: "text",
-        text: `Otimo! Voce selecionou ${posto.nome} - ${posto.localidade}. Qual medicamento voce gostaria de consultar?`,
+        text: `✅ Ótimo! Você selecionou ${posto.nome} - ${posto.localidade}.\nQual medicamento você gostaria de consultar?`,
       },
     ],
   };
@@ -195,7 +198,7 @@ export function buildInactivityClosureMessages(session: ChatSession): OutgoingWh
   const messages: OutgoingWhatsAppMessage[] = [
     {
       type: "text",
-      text: "Seu atendimento foi encerrado automaticamente por inatividade.",
+      text: "⏳ Seu atendimento foi encerrado automaticamente por inatividade.",
     },
   ];
 
@@ -226,15 +229,15 @@ export async function runChatFlow(phoneNumber: string, sessionInput: ChatSession
     if (postos.length === 0) {
       return {
         nextSession: withStep(session, "ask_name", { user_name: incoming }),
-        messages: [{ type: "text", text: `Prazer em conhecer voce, ${incoming}. No momento, nao ha postos disponiveis para consulta.` }],
+        messages: [{ type: "text", text: `Prazer em conhecer você, ${incoming}. No momento, não há postos disponíveis para consulta.` }],
       };
     }
 
     return {
       nextSession: withStep(session, "select_posto", { user_name: incoming }),
       messages: [
-        { type: "text", text: `Prazer em conhecer voce, ${incoming}!` },
-        ...buildPostoListMessage(postos, "Selecione o posto de saude que deseja consultar:"),
+        { type: "text", text: `Prazer em conhecer você, ${incoming}!` },
+        ...buildPostoListMessage(postos, "🏥 Selecione o posto de saúde que deseja consultar:"),
       ],
     };
   }
@@ -249,7 +252,7 @@ export async function runChatFlow(phoneNumber: string, sessionInput: ChatSession
     if (foundPostos.length === 0) {
       return {
         nextSession: withStep(session, "select_posto"),
-        messages: [{ type: "text", text: `Nao encontrei nenhum posto com "${incoming}". Digite outro nome, bairro ou selecione uma opcao da lista.` }],
+        messages: [{ type: "text", text: `Não encontrei nenhum posto com "${incoming}". Digite outro nome, bairro ou selecione uma opção da lista.` }],
       };
     }
 
@@ -259,7 +262,7 @@ export async function runChatFlow(phoneNumber: string, sessionInput: ChatSession
 
     return {
       nextSession: withStep(session, "select_posto"),
-      messages: buildPostoListMessage(foundPostos, `Encontrei ${foundPostos.length} postos. Escolha uma opcao na lista:`),
+      messages: buildPostoListMessage(foundPostos, `🏥 Encontrei ${foundPostos.length} postos. Escolha uma opção na lista:`),
     };
   }
 
@@ -273,7 +276,7 @@ export async function runChatFlow(phoneNumber: string, sessionInput: ChatSession
           selected_posto_localidade: null,
           pdf_url: null,
         }),
-        messages: buildPostoListMessage(postos, "Nao consegui recuperar o posto selecionado. Escolha novamente uma unidade para continuar:"),
+        messages: buildPostoListMessage(postos, "Não consegui recuperar o posto selecionado. Escolha novamente uma unidade para continuar:"),
       };
     }
 
@@ -298,7 +301,7 @@ export async function runChatFlow(phoneNumber: string, sessionInput: ChatSession
 
     if (searchedByBrand && pdfResponse.encontrado && pdfResponse.medicamentos.length > 0) {
       const quantidade = pdfResponse.medicamentos.length;
-      pdfResponse.mensagem = `Encontrei ${quantidade} medicamento${quantidade > 1 ? "s" : ""} relacionado${quantidade > 1 ? "s" : ""} a sua busca.`;
+      pdfResponse.mensagem = `Encontrei ${quantidade} medicamento${quantidade > 1 ? "s" : ""} relacionado${quantidade > 1 ? "s" : ""} à sua busca.`;
     }
 
     return {
@@ -313,7 +316,7 @@ export async function runChatFlow(phoneNumber: string, sessionInput: ChatSession
     if (option === "continue:mesmo_posto" || option === "1" || option.includes("mesmo posto") || option.includes("outro medicamento")) {
       return {
         nextSession: withStep(session, "ask_medicamento"),
-        messages: [{ type: "text", text: `Perfeito. Qual medicamento voce gostaria de consultar no ${session.selected_posto_nome}?` }],
+        messages: [{ type: "text", text: `Perfeito. Qual medicamento você gostaria de consultar no ${session.selected_posto_nome}?` }],
       };
     }
 
@@ -326,16 +329,16 @@ export async function runChatFlow(phoneNumber: string, sessionInput: ChatSession
           selected_posto_localidade: null,
           pdf_url: null,
         }),
-        messages: buildPostoListMessage(postos, "Sem problemas. Selecione o posto de saude que deseja consultar:"),
+        messages: buildPostoListMessage(postos, "Sem problemas. Selecione o posto de saúde que deseja consultar:"),
       };
     }
 
-    if (option === "continue:encerrar" || option === "3" || option.includes("encerrar") || option.includes("sair") || option === "nao") {
+    if (option === "continue:encerrar" || option === "3" || option.includes("encerrar") || option.includes("sair") || option === "nao" || option === "não") {
       return {
         nextSession: withStep(session, "ask_notify", {
         }),
         messages: [
-          { type: "text", text: `Foi um prazer ajudar voce, ${session.user_name || "usuario"}.` },
+          { type: "text", text: `🙂 Foi um prazer ajudar você, ${session.user_name || "usuário"}.` },
           ...buildNotificationPrompt(session),
         ],
       };
@@ -343,7 +346,7 @@ export async function runChatFlow(phoneNumber: string, sessionInput: ChatSession
 
     return {
       nextSession: withStep(session, "ask_continue"),
-      messages: [{ type: "text", text: "Por favor, escolha uma opcao usando os botoes ou envie 1, 2 ou 3." }],
+      messages: [{ type: "text", text: "Por favor, escolha uma opção usando os botões ou envie 1, 2 ou 3." }],
     };
   }
 
@@ -358,13 +361,13 @@ export async function runChatFlow(phoneNumber: string, sessionInput: ChatSession
         messages: [
           {
             type: "text",
-            text: `Avisos ativados com sucesso. Voce sera informado quando houver atualizacao do estoque da unidade ${session.selected_posto_nome}.`,
+            text: `🔔 Avisos ativados com sucesso. Você será informado quando houver atualização do estoque da unidade ${session.selected_posto_nome}.`,
           },
         ],
       };
     }
 
-    if (option === "notify:no" || option === "2" || option.includes("nao") || option.includes("obrigado")) {
+    if (option === "notify:no" || option === "2" || option.includes("nao") || option.includes("não") || option.includes("obrigado")) {
       return {
         nextSession: withStep(session, "welcome", {
           selected_posto_id: null,
@@ -378,12 +381,12 @@ export async function runChatFlow(phoneNumber: string, sessionInput: ChatSession
 
     return {
       nextSession: withStep(session, "ask_notify"),
-      messages: [{ type: "text", text: "Por favor, escolha uma opcao usando os botoes de aviso." }],
+      messages: [{ type: "text", text: "Por favor, escolha uma opção usando os botões de aviso." }],
     };
   }
 
   return {
     nextSession: session,
-    messages: [{ type: "text", text: "Nao consegui identificar o estado atual da conversa. Vamos tentar novamente." }],
+    messages: [{ type: "text", text: "Não consegui identificar o estado atual da conversa. Vamos tentar novamente." }],
   };
 }
