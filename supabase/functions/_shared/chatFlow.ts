@@ -1,0 +1,389 @@
+import {
+  getPdfUrl,
+  getPostoById,
+  listOpenPostos,
+  normalize,
+  resolveMedicamentoQuery,
+  searchPostos,
+  upsertPostoSubscription,
+  type ChatSession,
+  type PostoRecord,
+} from "./chatData.ts";
+import { searchMedicamentoInPdf } from "./searchMedicamento.ts";
+import { type OutgoingWhatsAppMessage } from "./whatsapp.ts";
+
+type ChatStep = "welcome" | "ask_name" | "select_posto" | "ask_medicamento" | "ask_continue" | "ask_notify";
+
+const INITIAL_STEP: ChatStep = "welcome";
+const MAX_LIST_ROWS = 10;
+
+interface FlowResult {
+  nextSession: ChatSession;
+  messages: OutgoingWhatsAppMessage[];
+}
+
+function baseSession(phoneNumber: string): ChatSession {
+  return {
+    phone_number: phoneNumber,
+    step: INITIAL_STEP,
+    user_name: null,
+    selected_posto_id: null,
+    selected_posto_nome: null,
+    selected_posto_localidade: null,
+    pdf_url: null,
+  };
+}
+
+function withStep(session: ChatSession, step: ChatStep, changes: Partial<ChatSession> = {}): ChatSession {
+  return {
+    ...session,
+    ...changes,
+    step,
+  };
+}
+
+function introMessages(): OutgoingWhatsAppMessage[] {
+  return [
+    {
+      type: "text",
+      text: "Ola! Eu sou o assistente do ConsultMed IA e estou aqui para ajudar voce a consultar medicamentos disponiveis nas UBS da sua cidade.",
+    },
+    {
+      type: "text",
+      text: "Para comecar, qual e o seu nome?",
+    },
+  ];
+}
+
+function buildPostoListMessage(postos: PostoRecord[], prompt: string): OutgoingWhatsAppMessage[] {
+  if (postos.length === 0) {
+    return [{ type: "text", text: "Nao ha postos disponiveis no momento." }];
+  }
+
+  const visiblePostos = postos.slice(0, MAX_LIST_ROWS);
+
+  const messages: OutgoingWhatsAppMessage[] = [
+    {
+      type: "list",
+      body: prompt,
+      buttonText: "Ver postos",
+      sections: [
+        {
+          title: "Postos disponiveis",
+          rows: visiblePostos.map((posto) => ({
+            id: `posto:${posto.id}`,
+            title: posto.nome,
+            description: posto.localidade,
+          })),
+        },
+      ],
+    },
+  ];
+
+  if (postos.length > MAX_LIST_ROWS) {
+    messages.push({
+      type: "text",
+      text: `Encontrei ${postos.length} postos. Estou exibindo os primeiros ${MAX_LIST_ROWS}. Se o que voce procura nao aparecer, digite parte do nome da unidade ou do bairro para filtrar.`,
+    });
+  }
+
+  return messages;
+}
+
+function buildNotificationPrompt(session: ChatSession): OutgoingWhatsAppMessage[] {
+  if (!session.selected_posto_nome || !session.selected_posto_localidade) {
+    return [];
+  }
+
+  return [
+    {
+      type: "buttons",
+      body: `Deseja receber avisos quando o estoque da unidade ${session.selected_posto_nome} (${session.selected_posto_localidade}) for atualizado?`,
+      buttons: [
+        { id: "notify:yes", title: "Receber avisos" },
+        { id: "notify:no", title: "Nao, obrigado" },
+      ],
+    },
+  ];
+}
+
+function formatMedicamentoMessage(
+  nomeDigitado: string,
+  postoNome: string,
+  postoLocalidade: string,
+  resposta: Awaited<ReturnType<typeof searchMedicamentoInPdf>>,
+): OutgoingWhatsAppMessage[] {
+  const messages: OutgoingWhatsAppMessage[] = [];
+
+  if (resposta.encontrado && resposta.medicamentos.length > 0) {
+    const quantidade = resposta.medicamentos.length;
+    messages.push({
+      type: "text",
+      text: `Consulta realizada com sucesso.\nEncontrei ${quantidade} medicamento${quantidade > 1 ? "s" : ""} disponivel${quantidade > 1 ? "eis" : ""}.`,
+    });
+
+    for (const medicamento of resposta.medicamentos.slice(0, 5)) {
+      const lines = [`*${medicamento.nome}*`, `Codigo: ${medicamento.codigo}`];
+
+      if (medicamento.unidade) {
+        lines.push(`Unidade: ${medicamento.unidade}`);
+      }
+
+      if (medicamento.lotes.length > 0) {
+        lines.push("Lotes disponiveis:");
+        for (const lote of medicamento.lotes.slice(0, 5)) {
+          lines.push(`- Lote ${lote.lote} | validade ${lote.validade} | quantidade ${lote.quantidade}`);
+        }
+      }
+
+      lines.push(`Quantidade total informada no PDF: ${medicamento.quantidadeTotal}`);
+      messages.push({ type: "text", text: lines.join("\n") });
+    }
+  } else {
+    messages.push({
+      type: "text",
+      text: `No momento, "${nomeDigitado}" nao consta no estoque atual do ${postoNome}.`,
+    });
+  }
+
+  messages.push({
+    type: "text",
+    text: `Para mais informacoes, dirija-se ao ${postoNome} (${postoLocalidade}) com receita medica e Cartao do SUS.`,
+  });
+
+  messages.push({
+    type: "buttons",
+    body: "O que voce deseja fazer agora?\n\nSelecione uma das opcoes abaixo para continuar o atendimento.",
+    buttons: [
+      { id: "continue:mesmo_posto", title: "Outro medicamento" },
+      { id: "continue:outro_posto", title: "Outro posto" },
+      { id: "continue:encerrar", title: "Encerrar" },
+    ],
+  });
+
+  return messages;
+}
+
+async function selectPosto(session: ChatSession, postoId: string): Promise<FlowResult> {
+  const posto = await getPostoById(postoId);
+  if (!posto) {
+    return {
+      nextSession: withStep(session, "select_posto"),
+      messages: [{ type: "text", text: "Nao consegui localizar esse posto. Tente escolher outra opcao da lista." }],
+    };
+  }
+
+  const pdfUrl = await getPdfUrl(posto.id);
+
+  return {
+    nextSession: withStep(session, "ask_medicamento", {
+      selected_posto_id: posto.id,
+      selected_posto_nome: posto.nome,
+      selected_posto_localidade: posto.localidade,
+      pdf_url: pdfUrl,
+    }),
+    messages: [
+      {
+        type: "text",
+        text: `Otimo! Voce selecionou ${posto.nome} - ${posto.localidade}. Qual medicamento voce gostaria de consultar?`,
+      },
+    ],
+  };
+}
+
+export function buildInactivityClosureMessages(session: ChatSession): OutgoingWhatsAppMessage[] {
+  const messages: OutgoingWhatsAppMessage[] = [
+    {
+      type: "text",
+      text: "Seu atendimento foi encerrado automaticamente por inatividade.",
+    },
+  ];
+
+  return messages.concat(buildNotificationPrompt(session));
+}
+
+export async function runChatFlow(phoneNumber: string, sessionInput: ChatSession | null, incomingText: string): Promise<FlowResult> {
+  const incoming = incomingText.trim();
+  const session = sessionInput ? { ...sessionInput } : baseSession(phoneNumber);
+  const step = (session.step as ChatStep) || INITIAL_STEP;
+
+  if (!incoming) {
+    return {
+      nextSession: session,
+      messages: [{ type: "text", text: "Envie uma mensagem de texto para eu continuar a consulta." }],
+    };
+  }
+
+  if (step === "welcome") {
+    return {
+      nextSession: withStep(session, "ask_name"),
+      messages: introMessages(),
+    };
+  }
+
+  if (step === "ask_name") {
+    const postos = await listOpenPostos();
+    if (postos.length === 0) {
+      return {
+        nextSession: withStep(session, "ask_name", { user_name: incoming }),
+        messages: [{ type: "text", text: `Prazer em conhecer voce, ${incoming}. No momento, nao ha postos disponiveis para consulta.` }],
+      };
+    }
+
+    return {
+      nextSession: withStep(session, "select_posto", { user_name: incoming }),
+      messages: [
+        { type: "text", text: `Prazer em conhecer voce, ${incoming}!` },
+        ...buildPostoListMessage(postos, "Selecione o posto de saude que deseja consultar:"),
+      ],
+    };
+  }
+
+  if (step === "select_posto") {
+    if (incoming.startsWith("posto:")) {
+      return selectPosto(session, incoming.replace("posto:", ""));
+    }
+
+    const foundPostos = await searchPostos(incoming);
+
+    if (foundPostos.length === 0) {
+      return {
+        nextSession: withStep(session, "select_posto"),
+        messages: [{ type: "text", text: `Nao encontrei nenhum posto com "${incoming}". Digite outro nome, bairro ou selecione uma opcao da lista.` }],
+      };
+    }
+
+    if (foundPostos.length === 1) {
+      return selectPosto(session, foundPostos[0].id);
+    }
+
+    return {
+      nextSession: withStep(session, "select_posto"),
+      messages: buildPostoListMessage(foundPostos, `Encontrei ${foundPostos.length} postos. Escolha uma opcao na lista:`),
+    };
+  }
+
+  if (step === "ask_medicamento") {
+    if (!session.selected_posto_id || !session.selected_posto_nome || !session.selected_posto_localidade) {
+      const postos = await listOpenPostos();
+      return {
+        nextSession: withStep(session, "select_posto", {
+          selected_posto_id: null,
+          selected_posto_nome: null,
+          selected_posto_localidade: null,
+          pdf_url: null,
+        }),
+        messages: buildPostoListMessage(postos, "Nao consegui recuperar o posto selecionado. Escolha novamente uma unidade para continuar:"),
+      };
+    }
+
+    if (/^\d+$/.test(incoming)) {
+      return {
+        nextSession: withStep(session, "ask_medicamento"),
+        messages: [{ type: "text", text: "Por favor, digite o nome do medicamento. Exemplo: Paracetamol ou Dipirona." }],
+      };
+    }
+
+    let queryForPdf = incoming;
+    try {
+      queryForPdf = await resolveMedicamentoQuery(session.selected_posto_id, incoming);
+    } catch (error) {
+      console.warn("Falha ao resolver query do medicamento:", error);
+    }
+
+    const pdfResponse = await searchMedicamentoInPdf(session.pdf_url, queryForPdf);
+    const userTermNorm = normalize(incoming);
+    const firstMedNorm = normalize(pdfResponse.medicamentos[0]?.nome || "");
+    const searchedByBrand = userTermNorm && firstMedNorm && !firstMedNorm.startsWith(userTermNorm.split(" ")[0]);
+
+    if (searchedByBrand && pdfResponse.encontrado && pdfResponse.medicamentos.length > 0) {
+      const quantidade = pdfResponse.medicamentos.length;
+      pdfResponse.mensagem = `Encontrei ${quantidade} medicamento${quantidade > 1 ? "s" : ""} relacionado${quantidade > 1 ? "s" : ""} a sua busca.`;
+    }
+
+    return {
+      nextSession: withStep(session, "ask_continue"),
+      messages: formatMedicamentoMessage(incoming, session.selected_posto_nome, session.selected_posto_localidade, pdfResponse),
+    };
+  }
+
+  if (step === "ask_continue") {
+    const option = incoming.toLowerCase();
+
+    if (option === "continue:mesmo_posto" || option === "1" || option.includes("mesmo posto") || option.includes("outro medicamento")) {
+      return {
+        nextSession: withStep(session, "ask_medicamento"),
+        messages: [{ type: "text", text: `Perfeito. Qual medicamento voce gostaria de consultar no ${session.selected_posto_nome}?` }],
+      };
+    }
+
+    if (option === "continue:outro_posto" || option === "2" || option.includes("outro posto") || option.includes("trocar")) {
+      const postos = await listOpenPostos();
+      return {
+        nextSession: withStep(session, "select_posto", {
+          selected_posto_id: null,
+          selected_posto_nome: null,
+          selected_posto_localidade: null,
+          pdf_url: null,
+        }),
+        messages: buildPostoListMessage(postos, "Sem problemas. Selecione o posto de saude que deseja consultar:"),
+      };
+    }
+
+    if (option === "continue:encerrar" || option === "3" || option.includes("encerrar") || option.includes("sair") || option === "nao") {
+      return {
+        nextSession: withStep(session, "ask_notify", {
+        }),
+        messages: [
+          { type: "text", text: `Foi um prazer ajudar voce, ${session.user_name || "usuario"}.` },
+          ...buildNotificationPrompt(session),
+        ],
+      };
+    }
+
+    return {
+      nextSession: withStep(session, "ask_continue"),
+      messages: [{ type: "text", text: "Por favor, escolha uma opcao usando os botoes ou envie 1, 2 ou 3." }],
+    };
+  }
+
+  if (step === "ask_notify") {
+    const option = incoming.toLowerCase();
+
+    if (option === "notify:yes" || option === "1" || option.includes("receber")) {
+      await upsertPostoSubscription(session);
+
+      return {
+        nextSession: withStep(session, "welcome"),
+        messages: [
+          {
+            type: "text",
+            text: `Avisos ativados com sucesso. Voce sera informado quando houver atualizacao do estoque da unidade ${session.selected_posto_nome}.`,
+          },
+        ],
+      };
+    }
+
+    if (option === "notify:no" || option === "2" || option.includes("nao") || option.includes("obrigado")) {
+      return {
+        nextSession: withStep(session, "welcome", {
+          selected_posto_id: null,
+          selected_posto_nome: null,
+          selected_posto_localidade: null,
+          pdf_url: null,
+        }),
+        messages: [{ type: "text", text: "Atendimento encerrado. Quando precisar, estarei por aqui." }],
+      };
+    }
+
+    return {
+      nextSession: withStep(session, "ask_notify"),
+      messages: [{ type: "text", text: "Por favor, escolha uma opcao usando os botoes de aviso." }],
+    };
+  }
+
+  return {
+    nextSession: session,
+    messages: [{ type: "text", text: "Nao consegui identificar o estado atual da conversa. Vamos tentar novamente." }],
+  };
+}
