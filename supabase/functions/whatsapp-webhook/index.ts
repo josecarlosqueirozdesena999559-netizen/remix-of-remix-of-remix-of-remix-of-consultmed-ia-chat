@@ -12,6 +12,7 @@ interface StoredSessionRow {
   selected_posto_nome: string | null;
   selected_posto_localidade: string | null;
   pdf_url: string | null;
+  last_interaction_at?: string | null;
 }
 
 function getVerifyToken() {
@@ -43,7 +44,7 @@ function extractIncomingText(message: Record<string, unknown>): string | null {
 async function getSession(phoneNumber: string): Promise<StoredSessionRow | null> {
   const { data, error } = await supabaseAdmin
     .from("whatsapp_sessions")
-    .select("phone_number, step, user_name, selected_posto_id, selected_posto_nome, selected_posto_localidade, pdf_url")
+    .select("phone_number, step, user_name, selected_posto_id, selected_posto_nome, selected_posto_localidade, pdf_url, last_interaction_at")
     .eq("phone_number", phoneNumber)
     .maybeSingle();
 

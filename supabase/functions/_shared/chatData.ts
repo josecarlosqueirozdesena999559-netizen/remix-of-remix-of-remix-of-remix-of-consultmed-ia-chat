@@ -17,6 +17,7 @@ export interface ChatSession {
   selected_posto_nome: string | null;
   selected_posto_localidade: string | null;
   pdf_url: string | null;
+  last_interaction_at?: string | null;
 }
 
 export interface LatestPdfInfo {

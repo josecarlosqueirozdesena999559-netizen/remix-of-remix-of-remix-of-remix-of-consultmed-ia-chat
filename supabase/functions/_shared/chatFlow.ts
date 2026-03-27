@@ -1,4 +1,4 @@
-import {
+﻿import {
   getPdfUrl,
   getPostoById,
   listOpenPostos,
@@ -12,10 +12,28 @@ import {
 import { searchMedicamentoInPdf } from "./searchMedicamento.ts";
 import { type OutgoingWhatsAppMessage } from "./whatsapp.ts";
 
-type ChatStep = "welcome" | "ask_name" | "select_posto" | "ask_medicamento" | "ask_continue" | "ask_notify";
+type ChatStep = "welcome" | "ask_name" | "select_posto" | "ask_medicamento" | "ask_continue" | "ask_notify" | "closed";
 
 const INITIAL_STEP: ChatStep = "welcome";
 const MAX_LIST_ROWS = 10;
+const SESSION_RESTART_MINUTES = 15;
+const RESTART_PATTERNS = [
+  "oi",
+  "ola",
+  "olá",
+  "bom dia",
+  "boa tarde",
+  "boa noite",
+  "menu",
+  "inicio",
+  "início",
+  "reiniciar",
+  "recomecar",
+  "recomeçar",
+  "comecar",
+  "começar",
+  "start",
+];
 
 interface FlowResult {
   nextSession: ChatSession;
@@ -40,6 +58,24 @@ function withStep(session: ChatSession, step: ChatStep, changes: Partial<ChatSes
     ...changes,
     step,
   };
+}
+
+function isKnownStep(step: string): step is ChatStep {
+  return ["welcome", "ask_name", "select_posto", "ask_medicamento", "ask_continue", "ask_notify", "closed"].includes(step);
+}
+
+function isRestartIntent(text: string) {
+  const normalized = normalize(text);
+  return RESTART_PATTERNS.some((pattern) => normalized === pattern || normalized.startsWith(`${pattern} `));
+}
+
+function isSessionExpired(session: ChatSession) {
+  if (!session.last_interaction_at) return false;
+
+  const lastInteraction = new Date(session.last_interaction_at).getTime();
+  if (Number.isNaN(lastInteraction)) return false;
+
+  return Date.now() - lastInteraction > SESSION_RESTART_MINUTES * 60 * 1000;
 }
 
 function introMessages(): OutgoingWhatsAppMessage[] {
@@ -69,7 +105,7 @@ function buildPostoListMessage(postos: PostoRecord[], prompt: string): OutgoingW
       buttonText: "Ver postos",
       sections: [
         {
-          title: "Postos disponiveis",
+          title: "Postos disponíveis",
           rows: visiblePostos.map((posto) => ({
             id: `posto:${posto.id}`,
             title: posto.nome,
@@ -135,7 +171,7 @@ function formatMedicamentoMessage(
       if (medicamento.lotes.length > 0) {
         lines.push("📋 Lotes disponíveis:");
         for (const lote of medicamento.lotes.slice(0, 5)) {
-          lines.push(`• Lote ${lote.lote} | validade ${lote.validade} | quantidade ${lote.quantidade}`);
+          lines.push(`- Lote ${lote.lote} | validade ${lote.validade} | quantidade ${lote.quantidade}`);
         }
       }
 
@@ -207,8 +243,13 @@ export function buildInactivityClosureMessages(session: ChatSession): OutgoingWh
 
 export async function runChatFlow(phoneNumber: string, sessionInput: ChatSession | null, incomingText: string): Promise<FlowResult> {
   const incoming = incomingText.trim();
-  const session = sessionInput ? { ...sessionInput } : baseSession(phoneNumber);
-  const step = (session.step as ChatStep) || INITIAL_STEP;
+  const shouldRestart =
+    !sessionInput ||
+    !isKnownStep(sessionInput.step) ||
+    isSessionExpired(sessionInput) ||
+    isRestartIntent(incoming);
+  const session = shouldRestart ? baseSession(phoneNumber) : { ...sessionInput };
+  const step = isKnownStep(session.step) ? session.step : INITIAL_STEP;
 
   if (!incoming) {
     return {
@@ -237,7 +278,7 @@ export async function runChatFlow(phoneNumber: string, sessionInput: ChatSession
       nextSession: withStep(session, "select_posto", { user_name: incoming }),
       messages: [
         { type: "text", text: `Prazer em conhecer você, ${incoming}!` },
-        ...buildPostoListMessage(postos, "🏥 Selecione o posto de saúde que deseja consultar:"),
+        ...buildPostoListMessage(postos, "Selecione o posto de saúde que deseja consultar:"),
       ],
     };
   }
@@ -262,7 +303,7 @@ export async function runChatFlow(phoneNumber: string, sessionInput: ChatSession
 
     return {
       nextSession: withStep(session, "select_posto"),
-      messages: buildPostoListMessage(foundPostos, `🏥 Encontrei ${foundPostos.length} postos. Escolha uma opção na lista:`),
+      messages: buildPostoListMessage(foundPostos, `Encontrei ${foundPostos.length} postos. Escolha uma opção na lista:`),
     };
   }
 
@@ -293,7 +334,7 @@ export async function runChatFlow(phoneNumber: string, sessionInput: ChatSession
     } catch (error) {
       console.warn("Falha ao resolver query do medicamento:", error);
     }
-
+    
     const pdfResponse = await searchMedicamentoInPdf(session.pdf_url, queryForPdf);
     const userTermNorm = normalize(incoming);
     const firstMedNorm = normalize(pdfResponse.medicamentos[0]?.nome || "");
@@ -335,8 +376,7 @@ export async function runChatFlow(phoneNumber: string, sessionInput: ChatSession
 
     if (option === "continue:encerrar" || option === "3" || option.includes("encerrar") || option.includes("sair") || option === "nao" || option === "não") {
       return {
-        nextSession: withStep(session, "ask_notify", {
-        }),
+        nextSession: withStep(session, "ask_notify"),
         messages: [
           { type: "text", text: `🙂 Foi um prazer ajudar você, ${session.user_name || "usuário"}.` },
           ...buildNotificationPrompt(session),
@@ -357,11 +397,15 @@ export async function runChatFlow(phoneNumber: string, sessionInput: ChatSession
       await upsertPostoSubscription(session);
 
       return {
-        nextSession: withStep(session, "welcome"),
+        nextSession: withStep(session, "closed"),
         messages: [
           {
             type: "text",
-            text: `🔔 Avisos ativados com sucesso. Você será informado quando houver atualização do estoque da unidade ${session.selected_posto_nome}.`,
+            text: "Avisos ativados com sucesso. Você será informado quando houver atualização do estoque da unidade " + session.selected_posto_nome + ".",
+          },
+          {
+            type: "text",
+            text: "Atendimento encerrado. Quando quiser iniciar uma nova consulta, envie oi.",
           },
         ],
       };
@@ -369,7 +413,7 @@ export async function runChatFlow(phoneNumber: string, sessionInput: ChatSession
 
     if (option === "notify:no" || option === "2" || option.includes("nao") || option.includes("não") || option.includes("obrigado")) {
       return {
-        nextSession: withStep(session, "welcome", {
+        nextSession: withStep(session, "closed", {
           selected_posto_id: null,
           selected_posto_nome: null,
           selected_posto_localidade: null,
@@ -385,8 +429,16 @@ export async function runChatFlow(phoneNumber: string, sessionInput: ChatSession
     };
   }
 
+  if (step === "closed") {
+    return {
+      nextSession: withStep(session, "closed"),
+      messages: [{ type: "text", text: "Seu atendimento foi encerrado. Para iniciar uma nova consulta, envie oi." }],
+    };
+  }
+
   return {
     nextSession: session,
     messages: [{ type: "text", text: "Não consegui identificar o estado atual da conversa. Vamos tentar novamente." }],
   };
 }
+
